@@ -31,6 +31,14 @@ print_usage_and_exit() {
         exit 1
 }
 
+audit_age() {
+        command -v age >/dev/null 2>&1
+
+        if [ ${?} -ne 0 ] ; then
+                errout "Install the 'age' program and add to \$PATH"
+        fi
+}
+
 audit_cliargs() {
         if [ "${_action:-x}" == 'lock' ] ; then
                 :
@@ -46,6 +54,27 @@ audit_cliargs() {
 
         if [ ! -f "${_infile}" ] ; then
                 errout "${_infile} not found"
+        fi
+}
+
+audit_pubkey() {
+        if ! grep -Eq '^age1' <<<"${_pubkey}" ; then
+                errout "Invalid public key format"
+        fi
+}
+
+audit_private_key_file() {
+        local _perms
+
+        if [ ! -e "${_private_key_file}" ] ; then
+                errout "Private key file ($_private_key_file) not found"
+        fi
+
+        _perms=$(stat -c '%a' "${_private_key_file}" 2>/dev/null) || \
+        _perms=$(stat -f '%Lp' "${_private_key_file}" 2>/dev/null)
+
+        if [ "${_perms}" != "600" ]; then
+                errout "Private key file must have 600 permissions"
         fi
 }
 
@@ -66,6 +95,8 @@ set_private_key_file() {
 }
 
 encrypt_file() {
+        local _rc
+
         local _outfile="${_infile##*/}.${_ext}"
 
         if [ -e "${_outfile}" ] ; then
@@ -76,8 +107,14 @@ encrypt_file() {
         -r "${_pubkey}"                                                 \
         -o "${_outfile}"                                                \
         "${_infile}"
+        _rc=${?}
 
-        if [ ${?} -ne 0 ] ; then
+        if [ ! -s "${_outfile}" ] ; then
+                printf '%s\n' "Output file ${_outfile} is empty, deleting.."
+                rm -f "${_outfile}"
+        fi
+
+        if [ ${_rc} -ne 0 ] ; then
                 errout 'Problem encrypting'
         fi
 
@@ -85,6 +122,8 @@ encrypt_file() {
 }
 
 decrypt_file() {
+        local _rc
+
         # Remove the extension and put outfile in cwd
         local _outfile="${_infile%.${_ext}}"
         _outfile="${_outfile##*/}"
@@ -104,27 +143,40 @@ decrypt_file() {
         -i "${_private_key_file}"                                       \
         "${_infile}"                                                    \
         > "${_outfile}"
+        _rc=${?}
 
-        if [ ${?} -ne 0 ] ; then
+        if [ ! -s "${_outfile}" ] ; then
+                printf '%s\n' "Output file ${_outfile} is empty, deleting.."
+                rm -f "${_outfile}"
+        fi
+
+        if [ ${_rc} -ne 0 ] ; then
                 errout 'Problem decrypting'
         fi
 
         printf '%s\n' "Decrypted output file is ${_outfile}"
 }
 
+print_secret_cleanup_msg() {
+        printf '\n%s\n' "*** Shred ${_private_key_file} when done!! ***"
+}
 
 # -------------------------------------------------------------------- #
 #                       MAIN LOGIC
 # -------------------------------------------------------------------- #
 
+audit_age
 audit_cliargs
 
 case "${_action}" in
         'lock')         set_pubkey
+                        audit_pubkey
                         encrypt_file
                         ;;
         'unlock')       set_private_key_file
+                        audit_private_key_file
                         decrypt_file
+                        print_secret_cleanup_msg
                         ;;
         *)              print_usage_and_exit
                         ;;
