@@ -20,6 +20,8 @@ sudo chmod 555 /usr/local/bin/jie-suo
 age-keygen
 ```
 
+Permanently store your private key in a reputable password safe (e.g. KeePassXC).
+
 ******
 
 ## Encrypt
@@ -52,6 +54,4 @@ Decrypt and save `foo.json` to cwd:
 jie-suo unlock foo.json.age
 ```
 
-**NB**:
-* permanently store your private key in a reputable password safe (e.g. KeePassXC)
-* shred the temporary `$JIE_SUO_PRIVATE_KEY_FILE` when finished decrypting for the day
+Shred the temporary `$JIE_SUO_PRIVATE_KEY_FILE` when finished decrypting. When it's needed again, pull it from your password safe.
