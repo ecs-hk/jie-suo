@@ -95,8 +95,6 @@ set_private_key_file() {
 }
 
 encrypt_file() {
-        local _rc
-
         local _outfile="${_infile##*/}.${_ext}"
 
         if [ -e "${_outfile}" ] ; then
@@ -107,14 +105,12 @@ encrypt_file() {
         -r "${_pubkey}"                                                 \
         -o "${_outfile}"                                                \
         "${_infile}"
-        _rc=${?}
 
-        if [ ! -s "${_outfile}" ] ; then
-                printf '%s\n' "Output file ${_outfile} is empty, deleting.."
-                rm -f "${_outfile}"
-        fi
-
-        if [ ${_rc} -ne 0 ] ; then
+        if [ ${?} -ne 0 ] ; then
+                if [ ! -s "${_outfile}" ] ; then
+                        printf '%s\n' "Deleting empty ${_outfile}"
+                        rm -f "${_outfile}"
+                fi
                 errout 'Problem encrypting'
         fi
 
@@ -122,8 +118,6 @@ encrypt_file() {
 }
 
 decrypt_file() {
-        local _rc
-
         # Remove the extension and put outfile in cwd
         local _outfile="${_infile%.${_ext}}"
         _outfile="${_outfile##*/}"
@@ -143,14 +137,12 @@ decrypt_file() {
         -i "${_private_key_file}"                                       \
         "${_infile}"                                                    \
         > "${_outfile}"
-        _rc=${?}
 
-        if [ ! -s "${_outfile}" ] ; then
-                printf '%s\n' "Output file ${_outfile} is empty, deleting.."
-                rm -f "${_outfile}"
-        fi
-
-        if [ ${_rc} -ne 0 ] ; then
+        if [ ${?} -ne 0 ] ; then
+                if [ ! -s "${_outfile}" ] ; then
+                        printf '%s\n' "Deleting empty ${_outfile}"
+                        rm -f "${_outfile}"
+                fi
                 errout 'Problem decrypting'
         fi
 
