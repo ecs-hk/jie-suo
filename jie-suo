@@ -1,0 +1,133 @@
+#!/bin/bash
+
+# --------------------------------------------------------------------------- #
+#                       SHELL OPTIONS
+# --------------------------------------------------------------------------- #
+
+set -uo pipefail
+
+# --------------------------------------------------------------------------- #
+#                       VARIABLE DEFINITIONS
+# --------------------------------------------------------------------------- #
+
+PATH=/usr/bin:/bin
+
+readonly _action="${1:-x}"
+readonly _infile="${2:-x}"
+readonly _ext='age'
+
+# --------------------------------------------------------------------------- #
+#                       FUNCTIONS
+# --------------------------------------------------------------------------- #
+
+errout() {
+        local _msg="${0##*/} error: ${1}"
+        printf '%s\n' "${_msg}" >&2
+        exit 1
+}
+
+print_usage_and_exit() {
+        printf '%s\n' "Usage: ${0##*/} lock|unlock input-file" >&2
+        exit 1
+}
+
+audit_cliargs() {
+        if [ "${_action:-x}" == 'lock' ] ; then
+                :
+        elif [ "${_action:-x}" == 'unlock' ] ; then
+                :
+        else
+                print_usage_and_exit
+        fi
+
+        if [ "${_infile:-x}" == 'x' ] ; then
+                print_usage_and_exit
+        fi
+
+        if [ ! -f "${_infile}" ] ; then
+                errout "${_infile} not found"
+        fi
+}
+
+set_pubkey() {
+        readonly _pubkey="${JIE_SUO_PUBKEY:-x}"
+
+        if [ "${_pubkey}" == "x" ] ; then
+                errout "Set \$JIE_SUO_PUBKEY in environment"
+        fi
+}
+
+set_private_key_file() {
+        readonly _private_key_file="${JIE_SUO_PRIVATE_KEY_FILE:-x}"
+
+        if [ "${_private_key_file}" == "x" ] ; then
+                errout "Set \$JIE_SUO_PRIVATE_KEY_FILE in environment"
+        fi
+}
+
+encrypt_file() {
+        local _outfile="${_infile##*/}.${_ext}"
+
+        if [ -e "${_outfile}" ] ; then
+                errout "${_outfile} already exists"
+        fi
+
+        age                                                             \
+        -r "${_pubkey}"                                                 \
+        -o "${_outfile}"                                                \
+        "${_infile}"
+
+        if [ ${?} -ne 0 ] ; then
+                errout 'Problem encrypting'
+        fi
+
+        printf '%s\n' "Encrypted output file is ${_outfile}"
+}
+
+decrypt_file() {
+        # Remove the extension and put outfile in cwd
+        local _outfile="${_infile%.${_ext}}"
+        _outfile="${_outfile##*/}"
+
+        if grep -Eq "\.${_ext}$" <<<"${_infile}" ; then
+                :
+        else
+                errout "I only decrypt .${_ext} files"
+        fi
+
+        if [ -f "${_outfile}" ] ; then
+                errout "${_outfile} already exists"
+        fi
+
+        age                                                             \
+        -d                                                              \
+        -i "${_private_key_file}"                                       \
+        "${_infile}"                                                    \
+        > "${_outfile}"
+
+        if [ ${?} -ne 0 ] ; then
+                errout 'Problem decrypting'
+        fi
+
+        printf '%s\n' "Decrypted output file is ${_outfile}"
+}
+
+
+# -------------------------------------------------------------------- #
+#                       MAIN LOGIC
+# -------------------------------------------------------------------- #
+
+audit_cliargs
+
+case "${_action}" in
+        'lock')         set_pubkey
+                        encrypt_file
+                        ;;
+        'unlock')       set_private_key_file
+                        decrypt_file
+                        ;;
+        *)              print_usage_and_exit
+                        ;;
+esac
+
+exit 0
