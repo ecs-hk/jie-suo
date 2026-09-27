@@ -69,6 +69,10 @@ Note that:
   input file
 - the output is created with `600` permissions
 - an existing output file is never overwritten — delete it first
+- the ciphertext is assembled as `<name>.age.tmp.<pid>` and renamed into
+  place only when `age` succeeds, so `foo.json.age` either does not exist or
+  is complete — a leftover `.tmp.` file only happens if `jie-suo` is killed
+  with `SIGKILL`
 
 ******
 
@@ -96,6 +100,9 @@ jie-suo unlock foo.json.age
 
 As with `lock`, the plaintext is written to your **current directory**, is
 created with `600` permissions, and is never written over an existing file.
+The same staging applies: the plaintext is assembled under a temporary name
+and renamed into place only when decryption succeeds, so a failed or
+interrupted run never leaves a partial `foo.json`.
 
 When you are done, remove the temporary key:
 

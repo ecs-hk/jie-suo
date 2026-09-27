@@ -15,7 +15,9 @@ Public key file encryption using `age(1)`.
 - `umask 077` is set at startup, so every output file is `600` from creation — never `chmod` plaintext after the fact
 - `stat -c '%a'` (GNU) and `stat -f '%Lp'` (BSD/macOS) **both** print permission bits in octal; no conversion is needed. A value like `81ed` is a full mode including file-type bits (`0x81ed` == `0100755`), not the output of `%Lp`
 - Output files are always written to cwd, not the input file's directory, and are never overwritten
-- On `age` failure the incomplete output is removed unconditionally (not just when empty), so no truncated ciphertext or partial plaintext is left behind. An `INT`/`TERM`/`HUP` trap covers interruption
+- Output is staged to `<name>.tmp.$$` in cwd and `mv`d into place, so the final name only ever exists with complete contents; a leftover `*.tmp.*` can only come from SIGKILL and never blocks a rerun
+- On `age` failure the staged temp file is removed unconditionally (not just when empty), so no truncated ciphertext or partial plaintext is left behind. The `INT`/`TERM`/`HUP` traps remove the same temp file and exit with 128+signo, so an interruption can never print a success message for missing or partial output
+- Every path argument given to an external command (`age`, `stat`, `rm`, `mv`) is preceded by `--`, so dash-leading names are never parsed as options
 - Private key file must have exactly `600` permissions; `400` is rejected by design
 - Argument count is validated before anything else, and `PATH` for `age` is checked after
 
@@ -43,15 +45,34 @@ every offender and exits non-zero, so it composes with `&&`.
 Functional checks are manual — there is no test harness in the repo:
 
 ```bash
-# round trip
+# round trip (move the plaintext aside first: unlock refuses to overwrite it)
 export JIE_SUO_PUBKEY="$(age-keygen -y key.txt)"
-./jie-suo lock foo.json && ./jie-suo unlock foo.json.age
+./jie-suo lock foo.json && mv foo.json foo.orig && \
+        ./jie-suo unlock foo.json.age && cmp foo.orig foo.json
 
 # private key permission matrix: 400, 644 and 4600 must all be rejected
 chmod 400 key.txt ; ./jie-suo unlock foo.json.age
 
 # output must be 600, and failures must leave no file behind
 stat -c '%a' foo.json.age
+
+# TERM while 'age' runs: exit 143, no success message, no output, no temp
+truncate -s 1G big.bin
+./jie-suo lock big.bin & pid=$!
+for _ in $(seq 1 300); do ls big.bin.age* >/dev/null 2>&1 && break; sleep 0.01; done
+kill -TERM "$pid" ; wait "$pid" ; echo "$?"       # 143
+ls big.bin.age big.bin.age.tmp.*                  # neither exists
+
+# INT to the whole process group (Ctrl-C equivalent) must exit 130:
+# run the lock under 'set -m', then kill -INT -"$(ps -o pgid= -p "$pid")"
+
+# dash-leading names, a file literally named 'age', and a dangling symlink
+# at the output name must all be handled
+./jie-suo lock ./-weird
+JIE_SUO_PRIVATE_KEY_FILE=-key ./jie-suo unlock ./-weird.age
+./jie-suo unlock age                              # I only decrypt .age files
+ln -s /tmp/target-x protected.txt
+./jie-suo unlock protected.txt.age                # /tmp/target-x untouched
 ```
 
 ## Setup
