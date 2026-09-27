@@ -3,6 +3,7 @@
 # Include dot-files
 !.gitignore
 # Include script and docs
+!AGENTS.md
 !jie-suo
 !LICENSE
 !README.md

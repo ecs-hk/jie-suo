@@ -32,9 +32,7 @@ print_usage_and_exit() {
 }
 
 audit_age() {
-        command -v age >/dev/null 2>&1
-
-        if [ ${?} -ne 0 ] ; then
+        if ! command -v age >/dev/null 2>&1 ; then
                 errout "Install the 'age' program and add to \$PATH"
         fi
 }
@@ -73,7 +71,13 @@ audit_private_key_file() {
         _perms=$(stat -c '%a' "${_private_key_file}" 2>/dev/null) || \
         _perms=$(stat -f '%Lp' "${_private_key_file}" 2>/dev/null)
 
-        if [ "${_perms}" != "600" ]; then
+        # BSD stat -f '%Lp' returns hex like 81ed; convert to octal
+        if [[ "${_perms}" =~ ^[0-9a-f]+$ ]] && (( ${#_perms} > 3 )) ; then
+                _perms=$(printf '%o' "$((0x${_perms}))")
+                _perms=${_perms: -3}
+        fi
+
+        if [ "${_perms}" != "600" ] ; then
                 errout "Private key file must have 600 permissions"
         fi
 }
@@ -101,12 +105,10 @@ encrypt_file() {
                 errout "${_outfile} already exists"
         fi
 
-        age                                                             \
+        if ! age                                                             \
         -r "${_pubkey}"                                                 \
         -o "${_outfile}"                                                \
-        "${_infile}"
-
-        if [ ${?} -ne 0 ] ; then
+        "${_infile}" ; then
                 if [ ! -s "${_outfile}" ] ; then
                         printf '%s\n' "Deleting empty ${_outfile}"
                         rm -f "${_outfile}"
@@ -119,26 +121,24 @@ encrypt_file() {
 
 decrypt_file() {
         # Remove the extension and put outfile in cwd
-        local _outfile="${_infile%.${_ext}}"
+        local _outfile="${_infile%."${_ext}"}"
         _outfile="${_outfile##*/}"
 
-        if grep -Eq "\.${_ext}$" <<<"${_infile}" ; then
+        if [[ "${_infile##*.}" == "${_ext}" ]] ; then
                 :
         else
                 errout "I only decrypt .${_ext} files"
         fi
 
-        if [ -f "${_outfile}" ] ; then
+        if [ -e "${_outfile}" ] ; then
                 errout "${_outfile} already exists"
         fi
 
-        age                                                             \
+        if ! age                                                             \
         -d                                                              \
         -i "${_private_key_file}"                                       \
         "${_infile}"                                                    \
-        > "${_outfile}"
-
-        if [ ${?} -ne 0 ] ; then
+        > "${_outfile}" ; then
                 if [ ! -s "${_outfile}" ] ; then
                         printf '%s\n' "Deleting empty ${_outfile}"
                         rm -f "${_outfile}"

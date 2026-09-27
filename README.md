@@ -45,7 +45,7 @@ jie-suo lock /tmp/foo.json
 Export private key file name to environment:
 
 ```bash
-export JIE_SUO_PRIVATE_KEY_FILE='/home/someguy/secret.txt.'
+export JIE_SUO_PRIVATE_KEY_FILE='/home/someguy/secret.txt'
 ```
 
 Decrypt and save `foo.json` to cwd:
@@ -54,4 +54,4 @@ Decrypt and save `foo.json` to cwd:
 jie-suo unlock foo.json.age
 ```
 
-Shred the temporary `$JIE_SUO_PRIVATE_KEY_FILE` when finished decrypting. When it's needed again, pull it from your password safe.
+Your private key is permanently stored in a password safe. For script execution, copy it to a temporary location, set `JIE_SUO_PRIVATE_KEY_FILE` to that path, then shred it when finished.
