@@ -23,8 +23,8 @@ readonly _infile="${2-}"
 readonly _nargs="$#"
 readonly _ext='age'
 
-# Set by encrypt_file/decrypt_file while 'age' is running so that the
-# interrupt trap can remove an incomplete output file.
+# Set by encrypt_file/decrypt_file while the output is still incomplete,
+# so that the interrupt trap can remove the staged temp file.
 _pending_outfile=''
 
 # --------------------------------------------------------------------------- #
@@ -42,7 +42,8 @@ print_usage_and_exit() {
         exit 1
 }
 
-# Invoked indirectly, via 'trap'.
+# Invoked indirectly, via 'trap'; the trap lines exit with 128+signo
+# after calling it, so no success message can follow an interruption.
 # shellcheck disable=SC2317
 cleanup_pending_outfile() {
         if [ -z "${_pending_outfile}" ] ; then
@@ -51,7 +52,7 @@ cleanup_pending_outfile() {
 
         printf '\n%s\n' \
                 "Interrupted: removing incomplete ${_pending_outfile}" >&2
-        rm -f "${_pending_outfile}"
+        rm -f -- "${_pending_outfile}"
 }
 
 audit_age() {
@@ -92,8 +93,8 @@ audit_pubkey() {
 # GNU and BSD/macOS 'stat' both print permission bits in octal, so no
 # conversion is needed. Non-zero return means neither variant worked.
 get_file_perms() {
-        stat -c '%a' "$1" 2>/dev/null && return 0
-        stat -f '%Lp' "$1" 2>/dev/null
+        stat -c '%a' -- "$1" 2>/dev/null && return 0
+        stat -f '%Lp' -- "$1" 2>/dev/null
 }
 
 audit_private_key_file() {
@@ -138,20 +139,31 @@ set_private_key_file() {
 
 encrypt_file() {
         local _outfile="${_infile##*/}.${_ext}"
+        local _tmpfile="${_outfile}.tmp.$$"
 
         if [ -e "${_outfile}" ] ; then
                 errout "${_outfile} already exists"
         fi
 
-        _pending_outfile="${_outfile}"
+        if [ -e "${_tmpfile}" ] ; then
+                errout "${_tmpfile} already exists"
+        fi
+
+        _pending_outfile="${_tmpfile}"
 
         if ! age                                                        \
         -r "${_pubkey}"                                                 \
-        -o "${_outfile}"                                                \
+        -o "${_tmpfile}"                                                \
+        --                                                              \
         "${_infile}" ; then
-                printf '%s\n' "Removing incomplete ${_outfile}" >&2
-                rm -f "${_outfile}"
+                printf '%s\n' "Removing incomplete ${_tmpfile}" >&2
+                rm -f -- "${_tmpfile}"
                 errout 'Problem encrypting'
+        fi
+
+        if ! mv -- "${_tmpfile}" "${_outfile}" ; then
+                rm -f -- "${_tmpfile}"
+                errout "Cannot rename output to ${_outfile}"
         fi
 
         _pending_outfile=''
@@ -161,10 +173,12 @@ encrypt_file() {
 
 decrypt_file() {
         local _outfile
+        local _tmpfile
 
-        if [ "${_infile##*.}" != "${_ext}" ] ; then
-                errout "I only decrypt .${_ext} files"
-        fi
+        case "${_infile}" in
+                *."${_ext}")    ;;
+                *)              errout "I only decrypt .${_ext} files" ;;
+        esac
 
         # Remove the extension and put outfile in cwd
         _outfile="${_infile%."${_ext}"}"
@@ -178,16 +192,28 @@ decrypt_file() {
                 errout "${_outfile} already exists"
         fi
 
-        _pending_outfile="${_outfile}"
+        _tmpfile="${_outfile}.tmp.$$"
+
+        if [ -e "${_tmpfile}" ] ; then
+                errout "${_tmpfile} already exists"
+        fi
+
+        _pending_outfile="${_tmpfile}"
 
         if ! age                                                        \
         -d                                                              \
         -i "${_private_key_file}"                                       \
+        --                                                              \
         "${_infile}"                                                    \
-        > "${_outfile}" ; then
-                printf '%s\n' "Removing incomplete ${_outfile}" >&2
-                rm -f "${_outfile}"
+        > "${_tmpfile}" ; then
+                printf '%s\n' "Removing incomplete ${_tmpfile}" >&2
+                rm -f -- "${_tmpfile}"
                 errout 'Problem decrypting'
+        fi
+
+        if ! mv -- "${_tmpfile}" "${_outfile}" ; then
+                rm -f -- "${_tmpfile}"
+                errout "Cannot rename output to ${_outfile}"
         fi
 
         _pending_outfile=''
@@ -208,7 +234,12 @@ print_secret_cleanup_msg() {
 audit_cliargs
 audit_age
 
-trap cleanup_pending_outfile INT TERM HUP
+# 'age' cannot be interrupted directly (bash defers traps until the
+# foreground command exits), so each handler only ever sees a temp file
+# that is incomplete or already renamed away.
+trap 'cleanup_pending_outfile; exit 130' INT
+trap 'cleanup_pending_outfile; exit 143' TERM
+trap 'cleanup_pending_outfile; exit 129' HUP
 
 case "${_action}" in
         'lock')         set_pubkey
