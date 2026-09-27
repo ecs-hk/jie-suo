@@ -4,24 +4,35 @@
 #                       SHELL OPTIONS
 # --------------------------------------------------------------------------- #
 
+# 'set -e' is deliberately omitted: every failure is handled explicitly
+# so that partial output can be cleaned up before exiting.
 set -uo pipefail
+
+# Output files must never be group- or world-accessible, not even while
+# 'age' is still writing plaintext into them.
+umask 077
 
 # --------------------------------------------------------------------------- #
 #                       VARIABLE DEFINITIONS
 # --------------------------------------------------------------------------- #
 
-PATH=/usr/bin:/bin
+PATH=/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin
 
-readonly _action="${1:-x}"
-readonly _infile="${2:-x}"
+readonly _action="${1-}"
+readonly _infile="${2-}"
+readonly _nargs="$#"
 readonly _ext='age'
+
+# Set by encrypt_file/decrypt_file while 'age' is running so that the
+# interrupt trap can remove an incomplete output file.
+_pending_outfile=''
 
 # --------------------------------------------------------------------------- #
 #                       FUNCTIONS
 # --------------------------------------------------------------------------- #
 
 errout() {
-        local _msg="${0##*/} error: ${1}"
+        local _msg="${0##*/} error: ${*}"
         printf '%s\n' "${_msg}" >&2
         exit 1
 }
@@ -31,22 +42,38 @@ print_usage_and_exit() {
         exit 1
 }
 
+# Invoked indirectly, via 'trap'.
+# shellcheck disable=SC2317
+cleanup_pending_outfile() {
+        if [ -z "${_pending_outfile}" ] ; then
+                return
+        fi
+
+        printf '\n%s\n' \
+                "Interrupted: removing incomplete ${_pending_outfile}" >&2
+        rm -f "${_pending_outfile}"
+}
+
 audit_age() {
         if ! command -v age >/dev/null 2>&1 ; then
-                errout "Install the 'age' program and add to \$PATH"
+                errout "Install the 'age' program into one of: ${PATH//:/ }"
         fi
 }
 
 audit_cliargs() {
-        if [ "${_action:-x}" == 'lock' ] ; then
+        if [ "${_nargs}" -ne 2 ] ; then
+                print_usage_and_exit
+        fi
+
+        if [ "${_action}" == 'lock' ] ; then
                 :
-        elif [ "${_action:-x}" == 'unlock' ] ; then
+        elif [ "${_action}" == 'unlock' ] ; then
                 :
         else
                 print_usage_and_exit
         fi
 
-        if [ "${_infile:-x}" == 'x' ] ; then
+        if [ -z "${_infile}" ] ; then
                 print_usage_and_exit
         fi
 
@@ -56,44 +83,55 @@ audit_cliargs() {
 }
 
 audit_pubkey() {
-        if ! grep -Eq '^age1' <<<"${_pubkey}" ; then
+        # An age recipient is 'age1' followed by 58 bech32 characters.
+        if ! grep -Eq '^age1[02-9ac-hj-np-z]{58}$' <<<"${_pubkey}" ; then
                 errout "Invalid public key format"
         fi
+}
+
+# GNU and BSD/macOS 'stat' both print permission bits in octal, so no
+# conversion is needed. Non-zero return means neither variant worked.
+get_file_perms() {
+        stat -c '%a' "$1" 2>/dev/null && return 0
+        stat -f '%Lp' "$1" 2>/dev/null
 }
 
 audit_private_key_file() {
         local _perms
 
-        if [ ! -e "${_private_key_file}" ] ; then
-                errout "Private key file ($_private_key_file) not found"
+        if [ ! -f "${_private_key_file}" ] ; then
+                errout "Private key file (${_private_key_file}) not found"
         fi
 
-        _perms=$(stat -c '%a' "${_private_key_file}" 2>/dev/null) || \
-        _perms=$(stat -f '%Lp' "${_private_key_file}" 2>/dev/null)
-
-        # BSD stat -f '%Lp' returns hex like 81ed; convert to octal
-        if [[ "${_perms}" =~ ^[0-9a-f]+$ ]] && (( ${#_perms} > 3 )) ; then
-                _perms=$(printf '%o' "$((0x${_perms}))")
-                _perms=${_perms: -3}
+        if [ ! -r "${_private_key_file}" ] ; then
+                errout "Private key file (${_private_key_file}) is unreadable"
         fi
 
-        if [ "${_perms}" != "600" ] ; then
-                errout "Private key file must have 600 permissions"
+        _perms=$(get_file_perms "${_private_key_file}") ||
+                errout "Cannot determine permissions of ${_private_key_file}"
+
+        if [ "${_perms}" != '600' ] ; then
+                errout "Private key file must have 600 permissions" \
+                       "(found: ${_perms})"
         fi
 }
 
 set_pubkey() {
-        readonly _pubkey="${JIE_SUO_PUBKEY:-x}"
+        local _key
 
-        if [ "${_pubkey}" == "x" ] ; then
+        # Tolerate a key pasted with surrounding whitespace or newlines.
+        _key="$(printf '%s' "${JIE_SUO_PUBKEY:-}" | tr -d '[:space:]')"
+        readonly _pubkey="${_key}"
+
+        if [ -z "${_pubkey}" ] ; then
                 errout "Set \$JIE_SUO_PUBKEY in environment"
         fi
 }
 
 set_private_key_file() {
-        readonly _private_key_file="${JIE_SUO_PRIVATE_KEY_FILE:-x}"
+        readonly _private_key_file="${JIE_SUO_PRIVATE_KEY_FILE:-}"
 
-        if [ "${_private_key_file}" == "x" ] ; then
+        if [ -z "${_private_key_file}" ] ; then
                 errout "Set \$JIE_SUO_PRIVATE_KEY_FILE in environment"
         fi
 }
@@ -105,60 +143,72 @@ encrypt_file() {
                 errout "${_outfile} already exists"
         fi
 
-        if ! age                                                             \
+        _pending_outfile="${_outfile}"
+
+        if ! age                                                        \
         -r "${_pubkey}"                                                 \
         -o "${_outfile}"                                                \
         "${_infile}" ; then
-                if [ ! -s "${_outfile}" ] ; then
-                        printf '%s\n' "Deleting empty ${_outfile}"
-                        rm -f "${_outfile}"
-                fi
+                printf '%s\n' "Removing incomplete ${_outfile}" >&2
+                rm -f "${_outfile}"
                 errout 'Problem encrypting'
         fi
+
+        _pending_outfile=''
 
         printf '%s\n' "Encrypted output file is ${_outfile}"
 }
 
 decrypt_file() {
+        local _outfile
+
+        if [ "${_infile##*.}" != "${_ext}" ] ; then
+                errout "I only decrypt .${_ext} files"
+        fi
+
         # Remove the extension and put outfile in cwd
-        local _outfile="${_infile%."${_ext}"}"
+        _outfile="${_infile%."${_ext}"}"
         _outfile="${_outfile##*/}"
 
-        if [[ "${_infile##*.}" == "${_ext}" ]] ; then
-                :
-        else
-                errout "I only decrypt .${_ext} files"
+        if [ -z "${_outfile}" ] ; then
+                errout "Cannot derive an output file name from ${_infile}"
         fi
 
         if [ -e "${_outfile}" ] ; then
                 errout "${_outfile} already exists"
         fi
 
-        if ! age                                                             \
+        _pending_outfile="${_outfile}"
+
+        if ! age                                                        \
         -d                                                              \
         -i "${_private_key_file}"                                       \
         "${_infile}"                                                    \
         > "${_outfile}" ; then
-                if [ ! -s "${_outfile}" ] ; then
-                        printf '%s\n' "Deleting empty ${_outfile}"
-                        rm -f "${_outfile}"
-                fi
+                printf '%s\n' "Removing incomplete ${_outfile}" >&2
+                rm -f "${_outfile}"
                 errout 'Problem decrypting'
         fi
+
+        _pending_outfile=''
 
         printf '%s\n' "Decrypted output file is ${_outfile}"
 }
 
 print_secret_cleanup_msg() {
-        printf '\n%s\n' "*** Shred ${_private_key_file} when done!! ***"
+        printf '\n%s\n%s\n' \
+                "*** Remove ${_private_key_file} securely when done: ***" \
+                "*** 'shred -u' (GNU/Linux) or 'rm -P' (BSD/macOS) ***" >&2
 }
 
-# -------------------------------------------------------------------- #
+# -------------------------------------------------------------------------- #
 #                       MAIN LOGIC
-# -------------------------------------------------------------------- #
+# -------------------------------------------------------------------------- #
 
-audit_age
 audit_cliargs
+audit_age
+
+trap cleanup_pending_outfile INT TERM HUP
 
 case "${_action}" in
         'lock')         set_pubkey
