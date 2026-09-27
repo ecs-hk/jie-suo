@@ -4,6 +4,22 @@ Public key file encryption using `age(1)`
 
 ## Setup
 
+### Install `age`
+
+`jie-suo` shells out to `age(1)`, which must already be installed.
+
+`jie-suo` does **not** use your `PATH` — that is deliberate, so that a
+trojan `age` earlier in your `PATH` can never be executed. It looks in these
+four directories only:
+
+```
+/usr/bin  /bin  /usr/local/bin  /opt/homebrew/bin
+```
+
+The official `age` release installs to `/usr/local/bin` and Homebrew installs
+to `/opt/homebrew/bin`, so both work out of the box. If you install `age`
+anywhere else, move or symlink it into one of the four.
+
 ### Install script
 
 After cloning the repository:
@@ -29,7 +45,16 @@ Permanently store your private key in a reputable password safe (e.g. KeePassXC)
 Export public key to environment, e.g. in `~/.bash_profile`:
 
 ```bash
-export JIE_SUO_PUBKEY='age1yyzyyz'
+export JIE_SUO_PUBKEY='age1w2fhwhdncy93pru7axc3wp74yfqmdv5wc0a6707my2f8zmat0pmq9xpxmy'
+```
+
+Replace that with the output of `age-keygen -y` for your own keypair. An `age`
+public key is `age1` followed by 58 bech32 characters; anything else is
+rejected before `age` is ever called. Surrounding whitespace and newlines are
+stripped, so this also works:
+
+```bash
+export JIE_SUO_PUBKEY="$(age-keygen -y key.txt)"
 ```
 
 Encrypt and save `foo.json.age` to cwd:
@@ -38,14 +63,29 @@ Encrypt and save `foo.json.age` to cwd:
 jie-suo lock /tmp/foo.json
 ```
 
+Note that:
+
+- the output is always written to your **current directory**, not next to the
+  input file
+- the output is created with `600` permissions
+- an existing output file is never overwritten — delete it first
+
 ******
 
 ## Decrypt
 
-Export private key file name to environment:
+Your private key is permanently stored in a password safe. For script
+execution, copy it to a temporary location and point the environment variable
+at that copy.
+
+The copy **must** have exactly `600` permissions, otherwise `jie-suo` refuses
+to use it. Note that `cp` on its own leaves the copy at `644` under a default
+`umask`, so the `chmod` is not optional:
 
 ```bash
-export JIE_SUO_PRIVATE_KEY_FILE='/home/someguy/secret.txt'
+cp ~/secrets/age.key /tmp/jie-suo.key
+chmod 600 /tmp/jie-suo.key
+export JIE_SUO_PRIVATE_KEY_FILE='/tmp/jie-suo.key'
 ```
 
 Decrypt and save `foo.json` to cwd:
@@ -54,4 +94,15 @@ Decrypt and save `foo.json` to cwd:
 jie-suo unlock foo.json.age
 ```
 
-Your private key is permanently stored in a password safe. For script execution, copy it to a temporary location, set `JIE_SUO_PRIVATE_KEY_FILE` to that path, then shred it when finished.
+As with `lock`, the plaintext is written to your **current directory**, is
+created with `600` permissions, and is never written over an existing file.
+
+When you are done, remove the temporary key:
+
+```bash
+shred -u /tmp/jie-suo.key     # GNU/Linux
+rm -P /tmp/jie-suo.key        # BSD/macOS
+```
+
+If decryption fails, the incomplete output file is removed for you, so no
+partial plaintext is left behind.
