@@ -15,9 +15,9 @@ Public key file encryption using `age(1)`.
 - `umask 077` is set at startup, so every output file is `600` from creation — never `chmod` plaintext after the fact
 - `stat -c '%a'` (GNU) and `stat -f '%Lp'` (BSD/macOS) **both** print permission bits in octal; no conversion is needed. A value like `81ed` is a full mode including file-type bits (`0x81ed` == `0100755`), not the output of `%Lp`
 - Output files are always written to cwd, not the input file's directory, and are never overwritten
-- Output is staged to `<name>.tmp.$$` in cwd and `mv`d into place, so the final name only ever exists with complete contents; a leftover `*.tmp.*` can only come from SIGKILL and never blocks a rerun
+- Output is staged via `mktemp` to `<name>.tmp.XXXXXX` (`O_EXCL`) in cwd and published with `mv -n`, so the final name only ever exists with complete contents and is never overwritten on a race; a leftover `*.tmp.*` can only come from SIGKILL and never blocks a rerun (random suffix)
 - On `age` failure the staged temp file is removed unconditionally (not just when empty), so no truncated ciphertext or partial plaintext is left behind. The `INT`/`TERM`/`HUP` traps remove the same temp file and exit with 128+signo, so an interruption can never print a success message for missing or partial output
-- Every path argument given to an external command (`age`, `stat`, `rm`, `mv`) is preceded by `--`, so dash-leading names are never parsed as options
+- Every path argument given to an external command (`age`, `stat`, `rm`, `mv`) is preceded by `--`, so dash-leading names are never parsed as options; the sole exception is BSD `stat`, which takes no `--`, so a leading dash is neutralised with a `./` prefix instead (GNU `stat` keeps `--`)
 - Private key file must have exactly `600` permissions; `400` is rejected by design
 - Argument count is validated before anything else, and `PATH` for `age` is checked after
 

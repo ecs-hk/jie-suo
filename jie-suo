@@ -90,11 +90,19 @@ audit_pubkey() {
         fi
 }
 
-# GNU and BSD/macOS 'stat' both print permission bits in octal, so no
-# conversion is needed. Non-zero return means neither variant worked.
+# GNU '%a' and BSD/macOS '%Lp' both print permission bits in octal,
+# so no conversion is needed. Non-zero return means neither worked.
+# BSD 'stat' takes no '--', so a leading dash is neutralised with
+# a './' prefix instead; GNU keeps its documented '--'.
 get_file_perms() {
-        stat -c '%a' -- "$1" 2>/dev/null && return 0
-        stat -f '%Lp' -- "$1" 2>/dev/null
+        local _file="$1"
+
+        case "${_file}" in
+                -*)     _file="./${_file}" ;;
+        esac
+
+        stat -c '%a' -- "${_file}" 2>/dev/null && return 0
+        stat -f '%Lp' "${_file}" 2>/dev/null
 }
 
 audit_private_key_file() {
@@ -139,15 +147,16 @@ set_private_key_file() {
 
 encrypt_file() {
         local _outfile="${_infile##*/}.${_ext}"
-        local _tmpfile="${_outfile}.tmp.$$"
+        local _tmpfile
 
-        if [ -e "${_outfile}" ] ; then
+        if [ -e "${_outfile}" ] || [ -L "${_outfile}" ] ; then
                 errout "${_outfile} already exists"
         fi
 
-        if [ -e "${_tmpfile}" ] ; then
-                errout "${_tmpfile} already exists"
-        fi
+        # 'mktemp' creates with O_EXCL, so a planted symlink or
+        # PID-guessed name can never hijack the staged output.
+        _tmpfile="$(mktemp "./${_outfile}.tmp.XXXXXX")" ||
+                errout "Cannot create temporary file"
 
         _pending_outfile="${_tmpfile}"
 
@@ -161,9 +170,16 @@ encrypt_file() {
                 errout 'Problem encrypting'
         fi
 
-        if ! mv -- "${_tmpfile}" "${_outfile}" ; then
+        # '-n' never overwrites; a skipped rename leaves the temp
+        # behind, which the next check turns into 'already exists'.
+        if ! mv -n -- "${_tmpfile}" "${_outfile}" ; then
                 rm -f -- "${_tmpfile}"
                 errout "Cannot rename output to ${_outfile}"
+        fi
+
+        if [ -e "${_tmpfile}" ] || [ -L "${_tmpfile}" ] ; then
+                rm -f -- "${_tmpfile}"
+                errout "${_outfile} already exists"
         fi
 
         _pending_outfile=''
@@ -188,32 +204,34 @@ decrypt_file() {
                 errout "Cannot derive an output file name from ${_infile}"
         fi
 
-        if [ -e "${_outfile}" ] ; then
+        if [ -e "${_outfile}" ] || [ -L "${_outfile}" ] ; then
                 errout "${_outfile} already exists"
         fi
 
-        _tmpfile="${_outfile}.tmp.$$"
-
-        if [ -e "${_tmpfile}" ] ; then
-                errout "${_tmpfile} already exists"
-        fi
+        _tmpfile="$(mktemp "./${_outfile}.tmp.XXXXXX")" ||
+                errout "Cannot create temporary file"
 
         _pending_outfile="${_tmpfile}"
 
         if ! age                                                        \
         -d                                                              \
         -i "${_private_key_file}"                                       \
+        -o "${_tmpfile}"                                                \
         --                                                              \
-        "${_infile}"                                                    \
-        > "${_tmpfile}" ; then
+        "${_infile}" ; then
                 printf '%s\n' "Removing incomplete ${_tmpfile}" >&2
                 rm -f -- "${_tmpfile}"
                 errout 'Problem decrypting'
         fi
 
-        if ! mv -- "${_tmpfile}" "${_outfile}" ; then
+        if ! mv -n -- "${_tmpfile}" "${_outfile}" ; then
                 rm -f -- "${_tmpfile}"
                 errout "Cannot rename output to ${_outfile}"
+        fi
+
+        if [ -e "${_tmpfile}" ] || [ -L "${_tmpfile}" ] ; then
+                rm -f -- "${_tmpfile}"
+                errout "${_outfile} already exists"
         fi
 
         _pending_outfile=''
